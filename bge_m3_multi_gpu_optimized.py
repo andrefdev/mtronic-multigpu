@@ -180,6 +180,50 @@ class AsyncQdrantUploader:
         for _ in range(self.config.async_upload_workers):
             await self.upload_queue.put(None)
 
+def load_bge_model_safe(model_name: str, gpu_id: int, use_fp16: bool = True) -> BGEM3FlagModel:
+    """
+    Carga el modelo BGE-M3 de manera segura manejando errores de versión de PyTorch
+    """
+    device = f"cuda:{gpu_id}"
+    
+    # Intentar con safetensors primero
+    try:
+        logging.info(f"Intentando cargar modelo con safetensors en GPU {gpu_id}")
+        model = BGEM3FlagModel(
+            model_name,
+            use_fp16=use_fp16,
+            device=device,
+            model_kwargs={
+                "torch_dtype": torch.float16 if use_fp16 else torch.float32,
+                "trust_remote_code": True,
+                "low_cpu_mem_usage": True,
+                "use_safetensors": True,
+            },
+        )
+        logging.info(f"Modelo cargado exitosamente con safetensors en GPU {gpu_id}")
+        return model
+    except Exception as e:
+        logging.warning(f"Error cargando con safetensors en GPU {gpu_id}: {e}")
+    
+    # Fallback sin safetensors
+    try:
+        logging.info(f"Intentando cargar modelo sin safetensors en GPU {gpu_id}")
+        model = BGEM3FlagModel(
+            model_name,
+            use_fp16=use_fp16,
+            device=device,
+            model_kwargs={
+                "torch_dtype": torch.float16 if use_fp16 else torch.float32,
+                "trust_remote_code": True,
+                "low_cpu_mem_usage": True,
+            },
+        )
+        logging.info(f"Modelo cargado exitosamente sin safetensors en GPU {gpu_id}")
+        return model
+    except Exception as e:
+        logging.error(f"Error cargando modelo en GPU {gpu_id}: {e}")
+        raise
+
 class MultiGPUEmbeddingGenerator:
     """Generador de embeddings optimizado para múltiples GPUs"""
     
@@ -202,20 +246,18 @@ class MultiGPUEmbeddingGenerator:
             torch.backends.cuda.matmul.allow_tf32 = True
             torch.backends.cudnn.allow_tf32 = True
             
-            # Cargar modelo en GPU
+            # Cargar modelo en GPU con manejo seguro
             with self.memory_managers[gpu_id].memory_context():
-                model = BGEM3FlagModel(
-                    "BAAI/bge-m3",
-                    use_fp16=True,
-                    device=f"cuda:{gpu_id}",
-                    model_kwargs={
-                        "torch_dtype": torch.float16,
-                        "attn_implementation": "flash_attention_2",
-                        "trust_remote_code": True,
-                        "low_cpu_mem_usage": True,
-                    },
-                )
-                self.models[gpu_id] = model
+                try:
+                    model = load_bge_model_safe(
+                        "BAAI/bge-m3",
+                        gpu_id,
+                        use_fp16=True
+                    )
+                    self.models[gpu_id] = model
+                except Exception as e:
+                    logging.error(f"Error cargando modelo en GPU {gpu_id}: {e}")
+                    continue
                 
             logging.info(f"GPU {gpu_id} configurada correctamente")
             
