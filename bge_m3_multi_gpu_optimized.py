@@ -11,7 +11,7 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 import logging
 from typing import Dict, List, Tuple, Optional
 from QdrantService import QdrantService
-from MongoDBService import MongoDBService
+from JSONDataService import JSONDataService  # Cambiado de MongoDBService
 from dotenv import load_dotenv
 import asyncio
 import aiohttp
@@ -49,6 +49,7 @@ class ProcessingConfig:
     memory_threshold: float = 0.85  # 85% memoria GPU
     qdrant_batch_size: int = 1000
     pipeline_depth: int = 3  # Pipeline stages
+    json_file_path: str = "mongodb_export.json"  # Archivo JSON con datos
 
 class GPUMemoryManager:
     """Gestor avanzado de memoria GPU"""
@@ -410,11 +411,10 @@ class OptimizedBgeService:
     def __init__(self):
         self.config = ProcessingConfig()
         self.logger = logging.getLogger(__name__)
-        
-        # Inicializar componentes
+          # Inicializar componentes
         self.embedding_generator = MultiGPUEmbeddingGenerator(self.config)
         self.uploader = AsyncQdrantUploader(self.config)
-        self.mongo = MongoDBService()
+        self.json_data = JSONDataService(self.config.json_file_path)  # Cambiado a JSON
         self.qdrant = QdrantService()
         
         # Estadísticas
@@ -447,7 +447,7 @@ class OptimizedBgeService:
                     return True
                 
                 # Obtener chunks
-                chunks = self.mongo.get_chunks_by_uuid(uuid)
+                chunks = self.json_data.get_chunks_by_uuid(uuid)
                 if not chunks:
                     self.logger.error(f"No se encontraron chunks para {uuid}")
                     return False
@@ -511,15 +511,33 @@ class OptimizedBgeService:
     async def process_all_documents(self):
         """Procesa todos los documentos con máximo paralelismo"""
         try:
-            # Obtener UUIDs
-            uuids = self.mongo.get_uuids_sorted_by_insertion()
-            total_docs = len(uuids)
+            # Verificar conexión a MongoDB
+            self.logger.info("🔍 Verificando conexión a MongoDB...")
+              # Contar documentos totales
+            total_docs_in_db = self.json_data.get_document_count()
+            self.logger.info(f"📊 Total de documentos en JSON: {total_docs_in_db}")
             
-            if not uuids:
-                self.logger.info("No hay documentos para procesar")
+            if total_docs_in_db == 0:
+                self.logger.warning("⚠️  No hay documentos en el archivo JSON")
                 return
             
-            self.logger.info(f"Procesando {total_docs} documentos con 4x L40S GPUs")
+            # Verificar documentos con UUID (en JSON todos deberían tener UUID)
+            total_chunks = self.json_data.get_total_chunks_count()
+            self.logger.info(f"📊 Total de chunks en JSON: {total_chunks}")
+            
+            # Obtener UUIDs
+            self.logger.info("🔍 Obteniendo UUIDs desde JSON...")
+            uuids = self.json_data.get_uuids_sorted_by_insertion()
+            total_docs = len(uuids)
+            
+            self.logger.info(f"📝 UUIDs únicos encontrados: {total_docs}")
+            
+            if not uuids:
+                self.logger.warning("❌ No se encontraron UUIDs para procesar")
+                self.logger.info("🔧 Ejecuta 'python diagnose_mongodb.py' para más detalles")
+                return
+            
+            self.logger.info(f"🚀 Procesando {total_docs} documentos con 4x L40S GPUs")
             
             # Iniciar workers de upload
             upload_tasks = await self.uploader.start_workers()
@@ -635,8 +653,8 @@ class OptimizedBgeService:
             # Cerrar conexiones
             if hasattr(self.qdrant, 'client'):
                 self.qdrant.client.close()
-            if hasattr(self.mongo, 'close'):
-                self.mongo.close()
+            if hasattr(self.json_data, 'close'):
+                self.json_data.close()
                 
             self.logger.info("Recursos limpiados correctamente")
             

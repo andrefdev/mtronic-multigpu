@@ -82,6 +82,8 @@ class MongoDBService:
             List[str]: Lista de UUIDs ordenados
         """
         try:
+            self.logger.info("🔍 Ejecutando pipeline para obtener UUIDs ordenados...")
+            
             # Usamos aggregate para obtener UUIDs únicos ordenados por $natural descendente
             pipeline = [
                 {"$sort": {"$natural": -1}},
@@ -89,10 +91,17 @@ class MongoDBService:
                 {"$project": {"_id": 0, "uuid": "$_id"}},
             ]
 
+            self.logger.debug(f"Pipeline: {pipeline}")
             results = list(self.collection.aggregate(pipeline))
-            return [doc["uuid"] for doc in results]
+            uuids = [doc["uuid"] for doc in results if doc.get("uuid")]
+            
+            self.logger.info(f"📝 Pipeline ejecutado exitosamente. UUIDs encontrados: {len(uuids)}")
+            
+            return uuids
         except Exception as e:
-            self.logger.error(f"Error obteniendo UUIDs ordenados: {str(e)}")
+            self.logger.error(f"❌ Error obteniendo UUIDs ordenados: {str(e)}")
+            import traceback
+            self.logger.error(f"Traceback: {traceback.format_exc()}")
             return []
 
     def get_unique_uuids(self) -> List[str]:
